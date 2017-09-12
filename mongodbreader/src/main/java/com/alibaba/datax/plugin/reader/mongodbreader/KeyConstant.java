@@ -57,6 +57,13 @@ public class KeyConstant {
      * MongoDB的idmeta
      */
     public static final String MONGO_PRIMIARY_ID_META = "_id";
+
+    /**
+     * 减去此秒数到现在为止的数据
+     */
+    public static final String UPDATESECONDS = "updateseconds";
+
+    public static final String ARRAYNAME = "arrayname";
     /**
      * 判断是否为数组类型
      * @param type 数据类型
