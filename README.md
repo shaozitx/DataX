@@ -1,6 +1,14 @@
 ![Datax-logo](https://github.com/alibaba/DataX/blob/master/images/DataX-logo.jpg)
 
 
+# 分支进行的更新
+对MongoDBReader进行的更新
+1. 使MongoDBReader 支持了增量更新
+2. 利用管道技术,可以提取MongoDB中的数组结构,使其成为单独的mysql表结构
+
+对MongoDBWriter进行的更新
+1. 修正了读取null值时无法写入mysql的bug
+
 
 # DataX
 
