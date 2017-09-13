@@ -15,6 +15,7 @@ import com.mongodb.*;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoCursor;
 import com.mongodb.client.MongoDatabase;
+import com.mongodb.client.model.Filters;
 import org.bson.BsonDocument;
 import org.bson.BsonInt32;
 import org.bson.Document;
@@ -82,6 +83,19 @@ public class MongoDBReader extends Reader {
          */
         private int pageSize = 1000;
 
+
+        /**
+         * 更新时间差
+         */
+        private Integer updateseconds = null;
+
+
+        /**
+         * 数组模式
+         */
+        private String arrayname = null;
+
+
         @Override
         public void startRead(RecordSender recordSender) {
 
@@ -107,23 +121,74 @@ public class MongoDBReader extends Reader {
                     pageSize = modCount;
                 }
                 MongoCursor<Document> dbCursor = null;
-                if(!Strings.isNullOrEmpty(query)) {
-                    dbCursor = col.find(BsonDocument.parse(query)).sort(sort)
-                            .skip(skipCount.intValue()).limit(pageSize).iterator();
-                } else {
-                    dbCursor = col.find().sort(sort)
-                            .skip(skipCount.intValue()).limit(pageSize).iterator();
+                if(Strings.isNullOrEmpty(arrayname)) {  // 不是数组模式
+
+                    if (updateseconds == 0){  // 全量更新
+                        dbCursor = col.find().sort(sort)
+                                .skip(skipCount.intValue()).limit(pageSize).iterator();
+
+                    }else { // 增量更新
+                        Date date  = new Date();
+                        Long datel = date.getTime();
+                        date.setTime(datel - updateseconds * 1000);
+                        dbCursor = col.find(Filters.gt("updatetime",date.getTime())).sort(sort)
+                                .skip(skipCount.intValue()).limit(pageSize).iterator();
+
+                    }
+
+                }else {   // 数组模式取表
+
+                    if (updateseconds == 0){
+
+                        Document unwind = new Document("$unwind","$"+arrayname);
+                        List<Document> bsons = new ArrayList<Document>();
+                        Document limit = new Document("$limit",1000);
+                        bsons.add(limit);
+                        bsons.add(unwind);
+                        dbCursor = col.aggregate(bsons).iterator();
+                    }else {
+
+                        Date date  = new Date();
+                        Long datel = date.getTime();
+                        date.setTime(datel - updateseconds * 1000);
+
+                        Document unwind = new Document("$unwind","$"+arrayname);
+                        List<Document> bsons = new ArrayList<Document>();
+                        Document limit = new Document("$limit",1000);
+                        Document skip = new Document("$skip",skipCount);
+                        Document group = new Document();
+                        group.put("$match", new Document("updatetime", new Document("$gt", date.getTime())));
+                        bsons.add(group);
+                        bsons.add(skip);
+                        bsons.add(limit);
+                        bsons.add(unwind);
+                        dbCursor = col.aggregate(bsons).iterator();
+                    }
+
                 }
+
+
+                int i1 = 0;
                 while (dbCursor.hasNext()) {
+
                     Document item = dbCursor.next();
                     Record record = recordSender.createRecord();
                     Iterator columnItera = mongodbColumnMeta.iterator();
+
                     while (columnItera.hasNext()) {
                         JSONObject column = (JSONObject)columnItera.next();
-                        Object tempCol = item.get(column.getString(KeyConstant.COLUMN_NAME));
-                        if (tempCol == null) {
-                            continue;
+                        String col_ = column.getString(KeyConstant.COLUMN_NAME);
+
+                        Object tempCol = item.get(col_);
+
+                        if (col_.contains("-")){
+                            String[] cols = col_.split("-");
+                            Document item1 = (Document)item.get(cols[0]);
+                            tempCol = item1.get(cols[1]);
                         }
+
+
+
                         if (tempCol instanceof Double) {
                             record.addColumn(new DoubleColumn((Double) tempCol));
                         } else if (tempCol instanceof Boolean) {
@@ -134,6 +199,25 @@ public class MongoDBReader extends Reader {
                             record.addColumn(new LongColumn((Integer) tempCol));
                         }else if (tempCol instanceof Long) {
                             record.addColumn(new LongColumn((Long) tempCol));
+                        }else if (tempCol == null){
+                            String type = column.getString(KeyConstant.COLUMN_TYPE);
+                            if (type.equals("Double")){
+                                record.addColumn(new DoubleColumn((Double) tempCol));
+
+                            }else if (type.equals("Boolean")){
+                                record.addColumn(new BoolColumn((Boolean) tempCol));
+
+                            }else if (type.equals("Date")){
+                                record.addColumn(new DateColumn((Date) tempCol));
+
+                            }else if (type.equals("Integer")){
+                                record.addColumn(new LongColumn((Integer) tempCol));
+
+                            }else{
+                                record.addColumn(new LongColumn((Long) tempCol));
+
+                            }
+
                         } else {
                             if(KeyConstant.isArrayType(column.getString(KeyConstant.COLUMN_TYPE))) {
                                 String splitter = column.getString(KeyConstant.COLUMN_SPLITTER);
@@ -152,29 +236,33 @@ public class MongoDBReader extends Reader {
                     }
                     recordSender.sendToWriter(record);
                 }
+
                 skipCount += pageSize;
             }
         }
 
+
         @Override
         public void init() {
             this.readerSliceConfig = super.getPluginJobConf();
-                this.userName = readerSliceConfig.getString(KeyConstant.MONGO_USER_NAME);
-                this.password = readerSliceConfig.getString(KeyConstant.MONGO_USER_PASSWORD);
-                this.database = readerSliceConfig.getString(KeyConstant.MONGO_DB_NAME);
+            this.userName = readerSliceConfig.getString(KeyConstant.MONGO_USER_NAME);
+            this.password = readerSliceConfig.getString(KeyConstant.MONGO_USER_PASSWORD);
+            this.database = readerSliceConfig.getString(KeyConstant.MONGO_DB_NAME);
             if(!Strings.isNullOrEmpty(userName) && !Strings.isNullOrEmpty(password)) {
                 mongoClient = MongoUtil.initCredentialMongoClient(readerSliceConfig,userName,password,database);
             } else {
                 mongoClient = MongoUtil.initMongoClient(readerSliceConfig);
             }
-            
+
             this.collection = readerSliceConfig.getString(KeyConstant.MONGO_COLLECTION_NAME);
             this.query = readerSliceConfig.getString(KeyConstant.MONGO_QUERY);
             this.mongodbColumnMeta = JSON.parseArray(readerSliceConfig.getString(KeyConstant.MONGO_COLUMN));
             this.batchSize = readerSliceConfig.getLong(KeyConstant.BATCH_SIZE);
             this.skipCount = readerSliceConfig.getLong(KeyConstant.SKIP_COUNT);
-        }
+            this.updateseconds = readerSliceConfig.getInt(KeyConstant.UPDATESECONDS, 0);
+            this.arrayname = readerSliceConfig.getString(KeyConstant.ARRAYNAME);
 
+        }
         @Override
         public void destroy() {
 
